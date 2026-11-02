@@ -8,70 +8,46 @@ import {ICampaign} from "./interfaces/ICampaign.sol";
 
 /**
  * @title Campaign
- * @notice Escrow for one crowdfunding project (DRAFT, interfaces and
- * high-level logic; not audited, test suite still to be written).
- *
- * Flow:
- *   1. Backers call contribute() until fundingDeadline.
- *   2. Anyone calls finalizeFunding(). Goal met -> Active, else Cancelled.
- *   3. Creator calls submitMilestone(cid). A 3-day voting window opens.
- *   4. Backers call vote(). Weight = contribution.
- *   5. Anyone calls finalizeVote() after the window. With 20% quorum and a
- *      majority of yes weight, the tranche is paid to the creator.
- *   6. A rejected milestone can be resubmitted once. After a second
- *      rejection, or if a due date passes (cancelIfOverdue), the campaign is
- *      Cancelled and backers call claimRefund() for their pro-rata share.
- *
- * Security notes:
- *   - Refunds are pull-based (backers withdraw, the contract never loops
- *     over backers and never pushes funds to them).
- *   - State is updated before every token transfer (checks-effects-interactions).
- *   - ReentrancyGuard protects every function that moves tokens.
+ * @notice Escrow for one crowdfunding project, deployed by CampaignFactory.
+ * Backers fund it with MockUSDC and the creator is paid one tranche per
+ * approved milestone. Draft code, not audited.
+ * @dev Lifecycle: backers contribute until the funding deadline, then
+ * finalizeFunding makes the campaign Active (goal met) or Cancelled (goal
+ * missed). The creator submits an IPFS CID per milestone, backers vote for
+ * 3 days weighted by contribution, and finalizeVote releases the tranche if
+ * 20% quorum is reached and yes beats no. A rejected milestone can be
+ * resubmitted once. A second rejection or a missed due date cancels the
+ * campaign, and backers then pull their pro-rata share of what is left.
+ * Security: refunds are pull-based, state changes happen before token
+ * transfers, and every token-moving function uses ReentrancyGuard and SafeERC20.
  */
 contract Campaign is ICampaign, ReentrancyGuard {
     using SafeERC20 for IERC20;
 
-    // ---------------------------------------------------------------------
-    // Constants (values come from the project proposal)
-    // ---------------------------------------------------------------------
-
     uint64 public constant VOTING_PERIOD = 3 days;
-    uint256 public constant QUORUM_BPS = 2000;    // 20% of total raised must vote
+    uint256 public constant QUORUM_BPS = 2000;
     uint256 public constant BPS_DENOMINATOR = 10000;
-    uint8 public constant MAX_ATTEMPTS = 2;       // first submission + one resubmission
+    uint8 public constant MAX_ATTEMPTS = 2;
 
-    // ---------------------------------------------------------------------
-    // Immutable campaign settings
-    // ---------------------------------------------------------------------
-
-    IERC20 public immutable token;
+    IERC20 public immutable override token;
     address public immutable override creator;
     uint256 public immutable override goal;
     uint64 public immutable override fundingDeadline;
 
-    // ---------------------------------------------------------------------
-    // Mutable state
-    // ---------------------------------------------------------------------
-
     Status public override status;
     uint256 public override totalRaised;
     uint256 public override totalReleased;
-    uint256 public override currentMilestone; // index of the milestone being worked on
+    uint256 public override currentMilestone;
 
     Milestone[] private _milestones;
     mapping(address => uint256) private _contributions;
     mapping(address => bool) private _refunded;
 
-    // Voting state for the milestone currently open for voting.
-    uint64 public votingEnds;
-    uint256 public yesWeight;
-    uint256 public noWeight;
-    uint256 private _voteRound; // increases every time voting opens
-    mapping(uint256 => mapping(address => bool)) private _hasVoted; // round => backer => voted
-
-    // ---------------------------------------------------------------------
-    // Modifiers
-    // ---------------------------------------------------------------------
+    uint64 public override votingEnds;
+    uint256 public override yesWeight;
+    uint256 public override noWeight;
+    uint256 private _voteRound;
+    mapping(uint256 => mapping(address => bool)) private _hasVoted;
 
     modifier onlyCreator() {
         require(msg.sender == creator, "Campaign: not creator");
@@ -83,18 +59,6 @@ contract Campaign is ICampaign, ReentrancyGuard {
         _;
     }
 
-    // ---------------------------------------------------------------------
-    // Construction
-    // ---------------------------------------------------------------------
-
-    /**
-     * @param token_ ERC-20 used for contributions (MockUSDC on Sepolia).
-     * @param creator_ Project creator who receives released tranches.
-     * @param goal_ Funding target in token units.
-     * @param fundingDeadline_ Unix time when funding closes.
-     * @param milestones_ Ordered milestones. shareBps must sum to 10000 and
-     *        due dates must increase and fall after the funding deadline.
-     */
     constructor(
         address token_,
         address creator_,
@@ -132,16 +96,11 @@ contract Campaign is ICampaign, ReentrancyGuard {
         status = Status.Funding;
     }
 
-    // ---------------------------------------------------------------------
-    // Backer actions
-    // ---------------------------------------------------------------------
-
-    /// @inheritdoc ICampaign
+    /// @notice Backer locks tokens in escrow. Only during Funding, before the deadline.
     function contribute(uint256 amount) external override nonReentrant inStatus(Status.Funding) {
         require(block.timestamp < fundingDeadline, "Campaign: funding closed");
         require(amount > 0, "Campaign: amount is zero");
 
-        // Effects first, then the token transfer.
         _contributions[msg.sender] += amount;
         totalRaised += amount;
         emit Contributed(msg.sender, amount, totalRaised);
@@ -149,9 +108,8 @@ contract Campaign is ICampaign, ReentrancyGuard {
         token.safeTransferFrom(msg.sender, address(this), amount);
     }
 
-    /// @inheritdoc ICampaign
-    function vote(bool approve) external override {
-        require(status == Status.Active, "Campaign: not active");
+    /// @notice Backer votes on the open milestone, weighted by contribution. Once per voting round.
+    function vote(bool approve) external override inStatus(Status.Active) {
         Milestone storage m = _milestones[currentMilestone];
         require(m.status == MilestoneStatus.Voting, "Campaign: no open vote");
         require(block.timestamp < votingEnds, "Campaign: voting closed");
@@ -169,26 +127,21 @@ contract Campaign is ICampaign, ReentrancyGuard {
         emit Voted(currentMilestone, msg.sender, approve, weight);
     }
 
-    /// @inheritdoc ICampaign
+    /// @notice Backer withdraws their pro-rata share of the unreleased balance. Only after cancellation, once.
     function claimRefund() external override nonReentrant inStatus(Status.Cancelled) {
         require(!_refunded[msg.sender], "Campaign: already refunded");
         uint256 contributed = _contributions[msg.sender];
         require(contributed > 0, "Campaign: nothing to refund");
 
-        // Pro-rata share of whatever has not yet been paid to the creator.
         uint256 amount = (contributed * (totalRaised - totalReleased)) / totalRaised;
 
-        _refunded[msg.sender] = true; // effect before interaction
+        _refunded[msg.sender] = true;
         emit Refunded(msg.sender, amount);
 
         token.safeTransfer(msg.sender, amount);
     }
 
-    // ---------------------------------------------------------------------
-    // Creator actions
-    // ---------------------------------------------------------------------
-
-    /// @inheritdoc ICampaign
+    /// @notice Creator submits an IPFS CID for the current milestone and opens a 3-day vote. Only before its due date.
     function submitMilestone(string calldata evidenceCid) external override onlyCreator inStatus(Status.Active) {
         Milestone storage m = _milestones[currentMilestone];
         require(
@@ -196,13 +149,13 @@ contract Campaign is ICampaign, ReentrancyGuard {
             "Campaign: cannot submit now"
         );
         require(m.attempts < MAX_ATTEMPTS, "Campaign: no attempts left");
+        require(block.timestamp <= m.dueDate, "Campaign: milestone overdue");
         require(bytes(evidenceCid).length > 0, "Campaign: empty evidence");
 
         m.evidenceCid = evidenceCid;
         m.status = MilestoneStatus.Voting;
         m.attempts += 1;
 
-        // Open a fresh voting round.
         _voteRound += 1;
         yesWeight = 0;
         noWeight = 0;
@@ -211,11 +164,7 @@ contract Campaign is ICampaign, ReentrancyGuard {
         emit MilestoneSubmitted(currentMilestone, evidenceCid, votingEnds);
     }
 
-    // ---------------------------------------------------------------------
-    // Permissionless state transitions
-    // ---------------------------------------------------------------------
-
-    /// @inheritdoc ICampaign
+    /// @notice Anyone moves the campaign to Active or Cancelled. Only after the funding deadline.
     function finalizeFunding() external override inStatus(Status.Funding) {
         require(block.timestamp >= fundingDeadline, "Campaign: funding still open");
 
@@ -229,7 +178,7 @@ contract Campaign is ICampaign, ReentrancyGuard {
         }
     }
 
-    /// @inheritdoc ICampaign
+    /// @notice Anyone tallies the vote and releases the tranche, rejects, or cancels. Only after the voting window.
     function finalizeVote() external override nonReentrant inStatus(Status.Active) {
         Milestone storage m = _milestones[currentMilestone];
         require(m.status == MilestoneStatus.Voting, "Campaign: no open vote");
@@ -242,13 +191,12 @@ contract Campaign is ICampaign, ReentrancyGuard {
         if (approved) {
             m.status = MilestoneStatus.Approved;
 
-            // The last tranche takes any rounding dust so nothing stays locked.
             bool isLast = index == _milestones.length - 1;
             uint256 amount = isLast
                 ? totalRaised - totalReleased
                 : (totalRaised * m.shareBps) / BPS_DENOMINATOR;
 
-            totalReleased += amount; // effect before interaction
+            totalReleased += amount;
             emit MilestoneApproved(index, amount);
 
             if (isLast) {
@@ -261,42 +209,42 @@ contract Campaign is ICampaign, ReentrancyGuard {
             token.safeTransfer(creator, amount);
         } else {
             m.status = MilestoneStatus.Rejected;
-            bool canResubmit = m.attempts < MAX_ATTEMPTS;
+            bool canResubmit = m.attempts < MAX_ATTEMPTS && block.timestamp <= m.dueDate;
             emit MilestoneRejected(index, canResubmit);
 
             if (!canResubmit) {
                 status = Status.Cancelled;
-                emit CampaignCancelled("milestone rejected twice");
+                emit CampaignCancelled(m.attempts < MAX_ATTEMPTS ? "milestone overdue" : "milestone rejected twice");
             }
         }
     }
 
-    /// @inheritdoc ICampaign
+    /// @notice Anyone cancels the campaign when the current milestone is past its due date and no vote is open.
     function cancelIfOverdue() external override inStatus(Status.Active) {
         Milestone storage m = _milestones[currentMilestone];
         require(block.timestamp > m.dueDate, "Campaign: not overdue");
-        // A vote that is still open gets to finish first.
         require(m.status != MilestoneStatus.Voting, "Campaign: vote in progress");
 
         status = Status.Cancelled;
         emit CampaignCancelled("milestone overdue");
     }
 
-    // ---------------------------------------------------------------------
-    // Views
-    // ---------------------------------------------------------------------
-
-    /// @inheritdoc ICampaign
+    /// @notice Returns the number of milestones.
     function milestoneCount() external view override returns (uint256) {
         return _milestones.length;
     }
 
-    /// @inheritdoc ICampaign
+    /// @notice Returns how much a backer contributed, which is also their vote weight.
     function contributionOf(address backer) external view override returns (uint256) {
         return _contributions[backer];
     }
 
-    /// @inheritdoc ICampaign
+    /// @notice Returns whether a backer has voted in the current round.
+    function hasVoted(address backer) external view override returns (bool) {
+        return _hasVoted[_voteRound][backer];
+    }
+
+    /// @notice Returns the full data for one milestone.
     function getMilestone(uint256 index) external view override returns (Milestone memory) {
         require(index < _milestones.length, "Campaign: bad index");
         return _milestones[index];

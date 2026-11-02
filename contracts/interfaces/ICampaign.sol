@@ -1,54 +1,41 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
+import {IERC20} from "@openzeppelin/contracts/token/ERC20/IERC20.sol";
+
 /**
  * @title ICampaign
- * @notice Public interface of a single MilestoneVault crowdfunding campaign.
- *
- * A Campaign is an escrow. Backers lock stablecoin in it, and the creator
- * receives the money in tranches, one per milestone, only after backers
- * vote to approve the milestone. If the goal is missed, a milestone is
- * rejected, or a deadline passes, backers can pull back their remaining share.
+ * @notice Interface for one MilestoneVault campaign escrow. Each Campaign is
+ * deployed by CampaignFactory, holds backer stablecoin, and pays the creator
+ * one tranche per milestone after backers vote to approve it.
  */
 interface ICampaign {
-    // ---------------------------------------------------------------------
-    // Types
-    // ---------------------------------------------------------------------
-
-    /// Lifecycle of the whole campaign.
     enum Status {
-        Funding,   // accepting contributions until fundingDeadline
-        Active,    // goal met, milestones are being delivered and voted on
-        Cancelled, // goal missed, milestone rejected twice, or deadline missed
-        Completed  // every milestone approved and paid out
+        Funding,
+        Active,
+        Cancelled,
+        Completed
     }
 
-    /// Lifecycle of one milestone.
     enum MilestoneStatus {
-        Pending,   // not yet submitted by the creator
-        Voting,    // evidence submitted, voting window open
-        Approved,  // vote passed, tranche released
-        Rejected   // vote failed, may be resubmitted once
+        Pending,
+        Voting,
+        Approved,
+        Rejected
     }
 
-    /// Input used when a campaign is created.
     struct MilestoneInput {
-        uint16 shareBps; // share of total funds in basis points (10000 = 100%)
-        uint64 dueDate;  // unix time by which the milestone must be approved
+        uint16 shareBps;
+        uint64 dueDate;
     }
 
-    /// Stored data for one milestone.
     struct Milestone {
         uint16 shareBps;
         uint64 dueDate;
-        string evidenceCid;    // IPFS CID of the creator's proof of work
+        string evidenceCid;
         MilestoneStatus status;
-        uint8 attempts;        // submissions so far (max 2: one resubmission)
+        uint8 attempts;
     }
-
-    // ---------------------------------------------------------------------
-    // Events (the frontend builds its dashboard from these)
-    // ---------------------------------------------------------------------
 
     event Contributed(address indexed backer, uint256 amount, uint256 totalRaised);
     event FundingFinalized(bool goalMet, uint256 totalRaised);
@@ -60,56 +47,69 @@ interface ICampaign {
     event CampaignCompleted();
     event Refunded(address indexed backer, uint256 amount);
 
-    // ---------------------------------------------------------------------
-    // Backer actions
-    // ---------------------------------------------------------------------
-
-    /// Lock `amount` of the campaign token in escrow. Funding phase only.
+    /// @notice Backer locks tokens in escrow. Only during Funding, before the deadline.
     function contribute(uint256 amount) external;
 
-    /// Cast a vote on the milestone currently open for voting.
-    /// Vote weight equals the backer's total contribution.
+    /// @notice Backer votes on the open milestone, weighted by their contribution. Once per round.
     function vote(bool approve) external;
 
-    /// Pull back the caller's pro-rata share of the unreleased balance.
-    /// Only works after the campaign is cancelled.
+    /// @notice Backer withdraws their pro-rata share of the unreleased balance. Only after cancellation.
     function claimRefund() external;
 
-    // ---------------------------------------------------------------------
-    // Creator actions
-    // ---------------------------------------------------------------------
-
-    /// Submit evidence (IPFS CID) for the current milestone and open voting.
+    /// @notice Creator submits an IPFS CID as milestone evidence and opens a 3-day vote. Only before the due date.
     function submitMilestone(string calldata evidenceCid) external;
 
-    // ---------------------------------------------------------------------
-    // Permissionless state transitions (anyone may call once conditions hold)
-    // ---------------------------------------------------------------------
-
-    /// After the funding deadline: move to Active if the goal was met,
-    /// otherwise to Cancelled so backers can refund.
+    /// @notice Anyone moves the campaign to Active or Cancelled after the funding deadline.
     function finalizeFunding() external;
 
-    /// After the voting window: count votes and release the tranche,
-    /// allow one resubmission, or cancel the campaign.
+    /// @notice Anyone tallies the vote after the window closes and releases, rejects, or cancels.
     function finalizeVote() external;
 
-    /// Cancel the campaign if the current milestone is past its due date
-    /// and has not been approved.
+    /// @notice Anyone cancels the campaign once the current milestone is past its due date.
     function cancelIfOverdue() external;
 
-    // ---------------------------------------------------------------------
-    // Views
-    // ---------------------------------------------------------------------
+    /// @notice Stablecoin held in escrow.
+    function token() external view returns (IERC20);
 
+    /// @notice Address that receives released tranches.
     function creator() external view returns (address);
+
+    /// @notice Current campaign status.
     function status() external view returns (Status);
+
+    /// @notice Funding goal in token units.
     function goal() external view returns (uint256);
+
+    /// @notice Unix time when funding closes.
     function fundingDeadline() external view returns (uint64);
+
+    /// @notice Total tokens contributed.
     function totalRaised() external view returns (uint256);
+
+    /// @notice Total tokens already paid to the creator.
     function totalReleased() external view returns (uint256);
+
+    /// @notice Index of the milestone being worked on.
     function currentMilestone() external view returns (uint256);
+
+    /// @notice Unix time when the current vote closes.
+    function votingEnds() external view returns (uint64);
+
+    /// @notice Yes weight in the current vote.
+    function yesWeight() external view returns (uint256);
+
+    /// @notice No weight in the current vote.
+    function noWeight() external view returns (uint256);
+
+    /// @notice Number of milestones in this campaign.
     function milestoneCount() external view returns (uint256);
+
+    /// @notice Amount a backer has contributed, which is also their vote weight.
     function contributionOf(address backer) external view returns (uint256);
+
+    /// @notice Whether a backer has voted in the current round.
+    function hasVoted(address backer) external view returns (bool);
+
+    /// @notice Full data for one milestone.
     function getMilestone(uint256 index) external view returns (Milestone memory);
 }

@@ -1,9 +1,12 @@
+/**
+ * Hardhat config: compiles the contracts with solc 0.8.20 and adds the
+ * Sepolia network only when SEPOLIA_RPC_URL and DEPLOYER_PRIVATE_KEY are set in .env.
+ */
 require("@nomicfoundation/hardhat-toolbox");
 require("dotenv").config();
 
 const { SEPOLIA_RPC_URL, DEPLOYER_PRIVATE_KEY } = process.env;
 
-/** @type import('hardhat/config').HardhatUserConfig */
 module.exports = {
   solidity: {
     version: "0.8.20",
@@ -12,7 +15,6 @@ module.exports = {
     },
   },
   networks: {
-    // Sepolia is only added when both values are set in .env
     ...(SEPOLIA_RPC_URL && DEPLOYER_PRIVATE_KEY
       ? { sepolia: { url: SEPOLIA_RPC_URL, accounts: [DEPLOYER_PRIVATE_KEY] } }
       : {}),

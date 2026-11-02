@@ -20,10 +20,10 @@ Blockchain fits because funds sit in code instead of a company's bank account, t
 1. A creator calls `CampaignFactory.createCampaign` with a goal, a funding deadline, and a list of milestones (each with a percentage share and a due date).
 2. Backers call `contribute` with mUSDC until the funding deadline.
 3. After the deadline anyone calls `finalizeFunding`. If the goal was met the campaign becomes Active. If not, it is Cancelled and backers can `claimRefund`.
-4. The creator calls `submitMilestone` with an IPFS CID of the evidence. A 3-day voting window opens.
+4. Before the milestone's due date, the creator calls `submitMilestone` with an IPFS CID of the evidence. A 3-day voting window opens.
 5. Backers call `vote`. Vote weight equals the amount the backer contributed.
 6. After the window anyone calls `finalizeVote`. With at least 20% of the raised funds voting and a majority of yes weight, that milestone's tranche is paid to the creator.
-7. A rejected milestone can be resubmitted once. A second rejection, or a missed due date (`cancelIfOverdue`), cancels the campaign. Backers then call `claimRefund` for their pro-rata share of what has not been paid out.
+7. A rejected milestone can be resubmitted once, as long as its due date has not passed. A second rejection, or a missed due date (`cancelIfOverdue`, or a rejection that lands after the due date), cancels the campaign. Backers then call `claimRefund` for their pro-rata share of what has not been paid out.
 
 ## Repository layout
 
@@ -70,13 +70,32 @@ Security choices carried over from the proposal:
 | Passing rule | Yes weight greater than no weight |
 | Resubmissions per milestone | 1 |
 | Milestone shares | Must add up to 10000 basis points (100%) |
+| Milestone due dates | Strictly increasing, all after the funding deadline |
+
+### Interface summary
+
+Full signatures, types, and events are in `contracts/interfaces/`.
+
+| Function | Who | When |
+| --- | --- | --- |
+| `CampaignFactory.createCampaign(goal, fundingDeadline, milestones)` | Anyone (becomes creator) | Any time |
+| `Campaign.contribute(amount)` | Backer | Funding, before the deadline |
+| `Campaign.finalizeFunding()` | Anyone | After the funding deadline |
+| `Campaign.submitMilestone(evidenceCid)` | Creator | Active, before the milestone due date |
+| `Campaign.vote(approve)` | Backer | During the 3-day window, once per round |
+| `Campaign.finalizeVote()` | Anyone | After the voting window |
+| `Campaign.cancelIfOverdue()` | Anyone | Active, due date passed, no vote open |
+| `Campaign.claimRefund()` | Backer | Cancelled, once |
+
+Read-only views include `status`, `totalRaised`, `totalReleased`, `currentMilestone`, `getMilestone`, `contributionOf`, `hasVoted`, `votingEnds`, `yesWeight`, and `noWeight`. Events (`Contributed`, `Voted`, `MilestoneApproved`, `Refunded`, and others) feed the planned dashboard.
 
 ## Dependencies
 
 - Node.js 18 or newer and npm
 - Solidity 0.8.20 (installed by Hardhat)
-- Hardhat and `@nomicfoundation/hardhat-toolbox`
-- OpenZeppelin Contracts 5.x
+- Hardhat 2.22+ and `@nomicfoundation/hardhat-toolbox` 5.x (includes ethers v6)
+- OpenZeppelin Contracts 5.x (`ReentrancyGuard`, `SafeERC20`, `ERC20`)
+- `dotenv` for reading `.env`
 - MetaMask (browser wallet) for using the dApp
 - Sepolia test ETH and an RPC URL (Alchemy or Infura) for deployment
 - Pinata account for IPFS uploads (frontend, not needed for the contracts)

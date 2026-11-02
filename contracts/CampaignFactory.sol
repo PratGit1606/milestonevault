@@ -7,14 +7,11 @@ import {ICampaignFactory} from "./interfaces/ICampaignFactory.sol";
 
 /**
  * @title CampaignFactory
- * @notice Deploys one isolated Campaign escrow per project (DRAFT).
- *
- * Each campaign is its own contract with its own balance, so a bug or an
- * exploit in one campaign cannot drain the money held by another.
- * The factory keeps a registry so the frontend can list campaigns.
+ * @notice Deploys a separate Campaign escrow for each project so funds in one
+ * campaign cannot be reached through another, and keeps a registry the
+ * frontend uses to list campaigns.
  */
 contract CampaignFactory is ICampaignFactory {
-    /// Stablecoin used by all campaigns (MockUSDC on Sepolia).
     address public immutable override token;
 
     address[] private _campaigns;
@@ -25,13 +22,12 @@ contract CampaignFactory is ICampaignFactory {
         token = token_;
     }
 
-    /// @inheritdoc ICampaignFactory
+    /// @notice Deploys a new Campaign with the caller as creator. Callable by anyone at any time.
     function createCampaign(
         uint256 goal,
         uint64 fundingDeadline,
         ICampaign.MilestoneInput[] calldata milestones
     ) external override returns (address campaign) {
-        // Campaign's constructor validates goal, deadline and milestone shares.
         Campaign c = new Campaign(token, msg.sender, goal, fundingDeadline, milestones);
         campaign = address(c);
 
@@ -41,18 +37,18 @@ contract CampaignFactory is ICampaignFactory {
         emit CampaignCreated(campaign, msg.sender, goal, fundingDeadline, milestones.length);
     }
 
-    /// @inheritdoc ICampaignFactory
+    /// @notice Returns the number of campaigns deployed so far.
     function campaignCount() external view override returns (uint256) {
         return _campaigns.length;
     }
 
-    /// @inheritdoc ICampaignFactory
+    /// @notice Returns the campaign address at a registry index.
     function campaignAt(uint256 index) external view override returns (address) {
         require(index < _campaigns.length, "Factory: bad index");
         return _campaigns[index];
     }
 
-    /// @inheritdoc ICampaignFactory
+    /// @notice Returns all campaigns created by one address.
     function campaignsByCreator(address creator) external view override returns (address[] memory) {
         return _byCreator[creator];
     }
