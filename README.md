@@ -5,7 +5,7 @@ Decentralized crowdfunding with milestone-based escrow, built on Ethereum (Sepol
 Project Group 7, Arizona State University, Blockchain course, Fall 2026.
 Team: Harshith Dharbi, Kamalesh Reddi Arugunta, Pratham Hegde, Sachin Kothandaraman, Sivasankar Annapureddy.
 
-> **Status: draft.** This repository holds the contract interfaces, a first draft of the escrow logic, and the project setup. The test suite, deployment to Sepolia, and the frontend are still in progress.
+> **Status: demo-ready MVP.** The contracts, fixture-based test suite, local end-to-end demo, and MetaMask frontend are runnable. Sepolia remains optional.
 
 ## Description
 
@@ -37,10 +37,14 @@ milestonevault/
     CampaignFactory.sol      Deploys one Campaign per project, keeps a registry
     mocks/
       MockUSDC.sol           Test stablecoin with a faucet (6 decimals)
+      ReentrantToken.sol     Test-only malicious callback token
   scripts/
     deploy.js                Deploys MockUSDC and CampaignFactory
-  test/                      Hardhat tests (to be written)
-  frontend/                  React/Next.js dApp (to be built)
+    demo.js                  Runs the complete course demo
+    copy-abi.js              Copies contract ABIs into the frontend
+  test/                      Fixture-based Hardhat tests
+  frontend/                  Next.js App Router dApp
+  docs/DEMO.md               Recording checklist
   hardhat.config.js
   package.json
   .env.example
@@ -113,10 +117,51 @@ npx hardhat compile
 ## Test
 
 ```bash
+npm install
 npx hardhat test
+npx hardhat coverage
 ```
 
-The test suite is not written yet. The target is at least 90% line coverage, including refund and attack cases.
+The suite covers factory validation and registries, funding outcomes, weighted voting, quorum and majority rules, tranche rounding, resubmission and cancellation, partial-release refunds, and a malicious token callback.
+
+## Demo
+
+Run the complete flow on Hardhat's in-process network:
+
+```bash
+npm install
+npm run demo
+```
+
+The script deploys contracts, funds three backers, creates and funds a campaign, approves the first two milestones, cancels after the third milestone is rejected twice, pays pro-rata refunds, and prints every final balance.
+
+For a persistent local chain used by MetaMask and the frontend, use separate terminals:
+
+```bash
+npm run node
+npm run deploy:local
+```
+
+The deploy script writes the current contract addresses to `frontend/.env.local`.
+
+## Frontend
+
+First compile and copy the ABIs:
+
+```bash
+npx hardhat compile
+npm run abi
+```
+
+Then install and start the app:
+
+```bash
+cd frontend
+npm install
+npm run dev
+```
+
+Open `http://localhost:3000`. In MetaMask, add Localhost 8545 with chain ID `31337`, import one of the accounts printed by `npm run node`, and connect it. The app supports campaign creation, contributions, creator submissions, weighted voting, finalization, overdue cancellation, refunds, an event activity feed, and local time controls.
 
 ## Deploy
 
@@ -133,16 +178,16 @@ Sepolia (needs `SEPOLIA_RPC_URL` and `DEPLOYER_PRIVATE_KEY` in `.env`):
 npx hardhat run scripts/deploy.js --network sepolia
 ```
 
-The script prints the MockUSDC and CampaignFactory addresses. The frontend reads them from its environment file.
+The script prints the MockUSDC and CampaignFactory addresses and writes them to `frontend/.env.local`.
 
-## Using the app (planned)
+## Using the app
 
-1. Connect MetaMask on Sepolia.
+1. Connect MetaMask on local Hardhat or optional Sepolia.
 2. Call the MockUSDC faucet to get test tokens.
 3. Create a campaign, or contribute to an existing one.
 4. Approve the campaign to spend your mUSDC, then contribute.
 5. When a milestone is submitted, open the campaign page and vote.
-6. Use the dashboard to follow funding, votes, and payouts. It reads everything from contract events.
+6. Use the campaign page to follow funding, votes, payouts, and refunds from contract events.
 
 ## Scope
 
@@ -150,11 +195,12 @@ Committed for the MVP: factory and escrow contracts, contribution-weighted votin
 
 Stretch goals if time allows: creator reputation scores, quadratic voting, and an L2 deployment.
 
-## Known gaps in this draft
+## Known gaps
 
-- No tests yet.
-- No frontend yet.
 - Backers cannot change their vote or withdraw during voting.
+- Campaign titles and descriptions are not stored on-chain, so the MVP lists campaigns by address.
+- Evidence upload is not bundled. The creator enters an existing IPFS CID.
+- Event history scans from block zero, which is suitable for the local demo but should be indexed for production.
 - Static analysis (Slither) has not been run.
 - The contracts are a course project and have not been audited. Do not use them with real funds.
 

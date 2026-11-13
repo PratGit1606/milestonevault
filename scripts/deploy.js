@@ -1,4 +1,6 @@
 const hre = require("hardhat");
+const fs = require("fs");
+const path = require("path");
 
 /**
  * Deploys MockUSDC and a CampaignFactory that uses it, then prints both addresses
@@ -23,6 +25,14 @@ async function main() {
   console.log("\nAdd these to the frontend environment file:");
   console.log(`NEXT_PUBLIC_USDC_ADDRESS=${usdcAddress}`);
   console.log(`NEXT_PUBLIC_FACTORY_ADDRESS=${factoryAddress}`);
+
+  const envPath = path.join(__dirname, "..", "frontend", ".env.local");
+  fs.mkdirSync(path.dirname(envPath), { recursive: true });
+  fs.writeFileSync(
+    envPath,
+    `NEXT_PUBLIC_USDC_ADDRESS=${usdcAddress}\nNEXT_PUBLIC_FACTORY_ADDRESS=${factoryAddress}\n`,
+  );
+  console.log("\nWrote frontend/.env.local");
 }
 
 main().catch((error) => {
